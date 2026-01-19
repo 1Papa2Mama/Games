@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Swing Stack Tower</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: rgba(20, 24, 32, 0.55);
+    --panel-border: rgba(255, 255, 255, 0.08);
+    --text: rgba(255, 255, 255, 0.9);
+    --muted: rgba(255, 255, 255, 0.55);
+    --accent: #c8f6ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+  }
+  #game {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #0b0f14;
+  }
+  .hud {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+  }
+  .top-bar {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    padding: 10px 14px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  }
+  .stats {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 14px;
+    letter-spacing: 0.02em;
+  }
+  .stats strong {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    pointer-events: auto;
+  }
+  button {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: transform 0.2s ease, background 0.2s ease, border 0.2s ease;
+  }
+  button:hover { transform: translateY(-1px); background: rgba(255, 255, 255, 0.14); }
+  button:active { transform: translateY(0); }
+  .status {
+    position: absolute;
+    left: 50%;
+    top: 80px;
+    transform: translateX(-50%);
+    font-size: 14px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .center-message {
+    position: absolute;
+    left: 50%;
+    top: 45%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  .center-message h1 {
+    margin: 0;
+    font-size: 32px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .center-message p {
+    margin: 10px 0 0;
+    color: var(--muted);
+  }
+  .bottom-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    font-size: 12px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud">
+  <div class="top-bar">
+    <div class="panel stats">
+      <div>Счёт<br><strong id="score">0</strong></div>
+      <div>Высота<br><strong id="height">0</strong></div>
+      <div id="combo">Perfect x0</div>
+    </div>
+    <div class="panel controls">
+      <button id="startBtn">Start</button>
+      <button id="muteBtn">Mute</button>
+      <button id="guideBtn">Guide: On</button>
+    </div>
+  </div>
+  <div class="status" id="status">Готовы?</div>
+  <div class="center-message" id="centerMessage">
+    <h1>Swing Stack Tower</h1>
+    <p>Клик / пробел, чтобы сбросить блок</p>
+  </div>
+  <div class="bottom-hint">Пауза при потере фокуса</div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const heightEl = document.getElementById('height');
+  const comboEl = document.getElementById('combo');
+  const statusEl = document.getElementById('status');
+  const centerMessage = document.getElementById('centerMessage');
+  const startBtn = document.getElementById('startBtn');
+  const muteBtn = document.getElementById('muteBtn');
+  const guideBtn = document.getElementById('guideBtn');
+
+  let width = 0;
+  let height = 0;
+  let dpr = Math.min(2, window.devicePixelRatio || 1);
+
+  const state = {
+    running: false,
+    ready: true,
+    paused: false,
+    cameraY: 0,
+    shake: 0,
+    shakeDecay: 0.9,
+    time: 0,
+    score: 0,
+    combo: 0,
+    blocks: [],
+    current: null,
+    falling: null,
+    level: 0,
+    guide: true,
+    sceneIndex: 0,
+    assistTimer: 0,
+    quickFails: 0,
+    lastDropDuration: 0,
+  };
+
+  const config = {
+    baseWidth: 160,
+    minWidth: 70,
+    blockHeight: 28,
+    gravity: -2000,
+    dropGap: 160,
+    swingAmplitude: 160,
+    swingBaseSpeed: 1.2,
+    swingSpeedGain: 0.015,
+    settleFriction: 0.92,
+    slideThreshold: 0.18,
+    perfectThreshold: 0.08,
+    cameraFollow: 0.08,
+  };
+
+  const colors = [
+    ['#8fd3ff', '#3a7bd5'],
+    ['#ffd29c', '#ff6b6b'],
+    ['#b8ffda', '#2ecc71'],
+    ['#fbc2eb', '#a6c1ee'],
+    ['#fddb92', '#d1fdff'],
+  ];
+
+  const scenes = [];
+  const noiseCanvas = document.createElement('canvas');
+  const noiseCtx = noiseCanvas.getContext('2d');
+
+  function resize() {
+    width = canvas.clientWidth = window.innerWidth;
+    height = canvas.clientHeight = window.innerHeight;
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildScenes();
+    buildNoise();
+  }
+
+  function buildNoise() {
+    const size = 160;
+    noiseCanvas.width = size;
+    noiseCanvas.height = size;
+    const img = noiseCtx.createImageData(size, size);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 200 + Math.random() * 55;
+      img.data[i] = v;
+      img.data[i + 1] = v;
+      img.data[i + 2] = v;
+      img.data[i + 3] = 20;
+    }
+    noiseCtx.putImageData(img, 0, 0);
+  }
+
+  function buildScenes() {
+    scenes.length = 0;
+    const types = ['city', 'desert', 'mountain', 'neon', 'space'];
+    types.forEach((type) => {
+      scenes.push(new Scene(type));
+    });
+    scenes.forEach(scene => scene.build(width, height));
+  }
+
+  class Scene {
+    constructor(type) {
+      this.type = type;
+      this.layers = [];
+      this.gradient = null;
+    }
+    build(w, h) {
+      this.layers = [];
+      this.gradient = ctx.createLinearGradient(0, 0, 0, h);
+      if (this.type === 'city') {
+        this.gradient.addColorStop(0, '#0a0f1a');
+        this.gradient.addColorStop(1, '#192438');
+        this.layers.push(this.buildCityLayer(w, h, 0.2));
+        this.layers.push(this.buildCityLayer(w, h, 0.5));
+      } else if (this.type === 'desert') {
+        this.gradient.addColorStop(0, '#2b1f2a');
+        this.gradient.addColorStop(1, '#9b5a3c');
+        this.layers.push(this.buildDunes(w, h, '#4a2f2a', 0.2));
+        this.layers.push(this.buildDunes(w, h, '#7a4f37', 0.45));
+      } else if (this.type === 'mountain') {
+        this.gradient.addColorStop(0, '#0b1b2f');
+        this.gradient.addColorStop(1, '#314b5f');
+        this.layers.push(this.buildMountains(w, h, '#1b2c3f', 0.2));
+        this.layers.push(this.buildMountains(w, h, '#3c546f', 0.5));
+      } else if (this.type === 'neon') {
+        this.gradient.addColorStop(0, '#050510');
+        this.gradient.addColorStop(1, '#2b0f3b');
+        this.layers.push(this.buildNeonGrid(w, h, 0.2));
+        this.layers.push(this.buildNeonBars(w, h, 0.5));
+      } else {
+        this.gradient.addColorStop(0, '#05070f');
+        this.gradient.addColorStop(1, '#191f3a');
+        this.layers.push(this.buildStars(w, h, 0.2));
+        this.layers.push(this.buildStars(w, h, 0.5));
+      }
+    }
+    buildCityLayer(w, h, density) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      const count = Math.floor(w * density * 0.2);
+      for (let i = 0; i < count; i++) {
+        const bw = 40 + Math.random() * 120;
+        const bh = 80 + Math.random() * (h * 0.5);
+        const x = Math.random() * w;
+        const y = h - bh;
+        octx.fillStyle = `rgba(20, 30, 50, ${0.7 + Math.random() * 0.2})`;
+        octx.fillRect(x, y, bw, bh);
+        const lightCount = Math.floor(bw * bh / 800);
+        for (let j = 0; j < lightCount; j++) {
+          const lx = x + Math.random() * bw;
+          const ly = y + Math.random() * bh;
+          octx.fillStyle = `rgba(255, 220, 120, ${Math.random() * 0.6})`;
+          octx.fillRect(lx, ly, 2, 2);
+        }
+      }
+      return off;
+    }
+    buildDunes(w, h, color, heightFactor) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      octx.fillStyle = color;
+      octx.beginPath();
+      octx.moveTo(0, h);
+      const peaks = 6;
+      for (let i = 0; i <= peaks; i++) {
+        const px = (i / peaks) * w;
+        const py = h - (Math.sin(i * 0.8 + Math.random()) * 0.5 + 0.5) * h * heightFactor;
+        octx.quadraticCurveTo(px, py, px, py);
+      }
+      octx.lineTo(w, h);
+      octx.closePath();
+      octx.fill();
+      return off;
+    }
+    buildMountains(w, h, color, heightFactor) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      octx.fillStyle = color;
+      octx.beginPath();
+      octx.moveTo(0, h);
+      const peaks = 8;
+      for (let i = 0; i <= peaks; i++) {
+        const px = (i / peaks) * w;
+        const py = h - (0.3 + Math.random() * 0.4) * h * heightFactor;
+        octx.lineTo(px, py);
+      }
+      octx.lineTo(w, h);
+      octx.closePath();
+      octx.fill();
+      return off;
+    }
+    buildNeonGrid(w, h, intensity) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      octx.strokeStyle = `rgba(120, 200, 255, ${0.2 + intensity})`;
+      octx.lineWidth = 1;
+      const step = 40;
+      for (let x = 0; x < w; x += step) {
+        octx.beginPath();
+        octx.moveTo(x, h * 0.5);
+        octx.lineTo(w / 2, h);
+        octx.stroke();
+      }
+      for (let y = h * 0.5; y < h; y += step) {
+        octx.beginPath();
+        octx.moveTo(0, y);
+        octx.lineTo(w, y);
+        octx.stroke();
+      }
+      return off;
+    }
+    buildNeonBars(w, h, intensity) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      const count = Math.floor(w / 80);
+      for (let i = 0; i < count; i++) {
+        const x = i * 80 + Math.random() * 30;
+        const barH = h * (0.2 + Math.random() * 0.4);
+        const grad = octx.createLinearGradient(0, h - barH, 0, h);
+        grad.addColorStop(0, `rgba(255, 120, 240, ${0.2 + intensity})`);
+        grad.addColorStop(1, `rgba(120, 80, 200, ${0.05 + intensity})`);
+        octx.fillStyle = grad;
+        octx.fillRect(x, h - barH, 40, barH);
+      }
+      return off;
+    }
+    buildStars(w, h, intensity) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+      const count = Math.floor(w * h * (0.0004 + intensity * 0.0005));
+      for (let i = 0; i < count; i++) {
+        const x = Math.random() * w;
+        const y = Math.random() * h;
+        const r = Math.random() * 1.5 + 0.2;
+        octx.fillStyle = `rgba(200, 220, 255, ${0.3 + Math.random() * 0.6})`;
+        octx.beginPath();
+        octx.arc(x, y, r, 0, Math.PI * 2);
+        octx.fill();
+      }
+      return off;
+    }
+    draw(cameraY) {
+      ctx.fillStyle = this.gradient;
+      ctx.fillRect(0, 0, width, height);
+      this.layers.forEach((layer, i) => {
+        const parallax = 0.12 + i * 0.2;
+        const offset = (cameraY * parallax) % height;
+        ctx.globalAlpha = 0.9 - i * 0.2;
+        ctx.drawImage(layer, 0, -offset, width, height);
+        ctx.drawImage(layer, 0, height - offset, width, height);
+      });
+      ctx.globalAlpha = 1;
+      if (this.type === 'desert') {
+        ctx.fillStyle = 'rgba(250, 220, 180, 0.08)';
+        ctx.fillRect(0, 0, width, height);
+      }
+      if (this.type === 'space') {
+        ctx.fillStyle = 'rgba(120, 150, 255, 0.05)';
+        ctx.fillRect(0, 0, width, height);
+      }
+    }
+  }
+
+  class AudioEngine {
+    constructor() {
+      this.ctx = null;
+      this.master = null;
+      this.muted = false;
+      this.started = false;
+      this.musicTimer = 0;
+      this.step = 0;
+    }
+    init() {
+      if (this.ctx) return;
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.4;
+      this.master.connect(this.ctx.destination);
+      this.started = true;
+    }
+    setMute(val) {
+      this.muted = val;
+      if (this.master) this.master.gain.value = val ? 0 : 0.4;
+    }
+    tick(dt) {
+      if (!this.ctx || !state.running || state.paused) return;
+      this.musicTimer += dt;
+      if (this.musicTimer > 0.5) {
+        this.musicTimer = 0;
+        this.playMusicStep();
+      }
+    }
+    playMusicStep() {
+      const scale = [220, 247, 262, 294, 330, 392];
+      const root = scale[(Math.floor(state.level / 4) + this.step) % scale.length];
+      this.playTone(root, 0.5, 0.08, 'triangle');
+      if (this.step % 2 === 0) {
+        this.playTone(root / 2, 0.6, 0.12, 'sine');
+      }
+      this.step = (this.step + 1) % 8;
+    }
+    playTone(freq, duration, volume, type) {
+      if (!this.ctx || this.muted) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const filter = this.ctx.createBiquadFilter();
+      osc.type = type;
+      osc.frequency.value = freq;
+      filter.type = 'lowpass';
+      filter.frequency.value = 1200;
+      gain.gain.value = volume;
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+      osc.connect(filter).connect(gain).connect(this.master);
+      osc.start();
+      osc.stop(this.ctx.currentTime + duration);
+    }
+    sfx(type) {
+      if (!this.ctx || this.muted) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.connect(gain).connect(this.master);
+      if (type === 'drop') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(260, now);
+        osc.frequency.exponentialRampToValueAtTime(140, now + 0.2);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+        osc.start();
+        osc.stop(now + 0.25);
+      } else if (type === 'hit') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(120, now);
+        gain.gain.setValueAtTime(0.25, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        osc.start();
+        osc.stop(now + 0.3);
+      } else if (type === 'perfect') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(780, now + 0.2);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        osc.start();
+        osc.stop(now + 0.2);
+      } else if (type === 'level') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(280, now);
+        osc.frequency.exponentialRampToValueAtTime(420, now + 0.4);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+        osc.start();
+        osc.stop(now + 0.4);
+      } else if (type === 'gameover') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(180, now);
+        osc.frequency.exponentialRampToValueAtTime(60, now + 0.6);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+        osc.start();
+        osc.stop(now + 0.6);
+      }
+    }
+  }
+
+  const audio = new AudioEngine();
+
+  function resetGame() {
+    state.blocks = [];
+    state.level = 0;
+    state.score = 0;
+    state.combo = 0;
+    state.cameraY = 0;
+    state.shake = 0;
+    state.current = null;
+    state.falling = null;
+    if (state.quickFails >= 2) {
+      state.assistTimer = 6;
+      state.quickFails = 0;
+    } else {
+      state.assistTimer = 0;
+    }
+    addBaseBlock();
+    spawnBlock();
+    updateUI();
+  }
+
+  function addBaseBlock() {
+    const base = {
+      x: width / 2,
+      y: 0,
+      w: config.baseWidth + 40,
+      h: config.blockHeight + 6,
+      colorIndex: 0,
+    };
+    state.blocks.push(base);
+  }
+
+  function blockWidthForLevel(level) {
+    const curve = Math.max(0, level - 5);
+    let w = config.baseWidth - curve * 4;
+    w = Math.max(config.minWidth, w);
+    if (state.assistTimer > 0) {
+      w += 14;
+    }
+    return w;
+  }
+
+  function swingSpeedForLevel(level) {
+    const curve = Math.max(0, level - 3);
+    let speed = config.swingBaseSpeed + curve * config.swingSpeedGain;
+    if (state.assistTimer > 0) speed *= 0.85;
+    return speed;
+  }
+
+  function spawnBlock() {
+    const top = state.blocks[state.blocks.length - 1];
+    const newBlock = {
+      x: width / 2,
+      y: top.y + top.h + config.dropGap,
+      w: blockWidthForLevel(state.level),
+      h: config.blockHeight,
+      vx: 0,
+      vy: 0,
+      angle: Math.random() * Math.PI * 2,
+      dropping: false,
+      settling: false,
+      landed: false,
+      dropTime: 0,
+      colorIndex: state.level % colors.length,
+    };
+    state.current = newBlock;
+    state.falling = null;
+  }
+
+  function dropBlock() {
+    if (!state.running || state.paused) return;
+    if (!state.current || state.current.dropping) return;
+    state.current.dropping = true;
+    state.current.vy = 0;
+    state.current.dropTime = state.time;
+    audio.sfx('drop');
+  }
+
+  function updateUI() {
+    scoreEl.textContent = Math.floor(state.score);
+    heightEl.textContent = state.level;
+    comboEl.textContent = `Perfect x${state.combo}`;
+  }
+
+  function updateStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function update(dt) {
+    if (!state.running || state.paused) return;
+    state.time += dt;
+    audio.tick(dt);
+
+    if (state.assistTimer > 0) state.assistTimer -= dt;
+
+    if (state.current && !state.current.dropping) {
+      const speed = swingSpeedForLevel(state.level);
+      state.current.angle += dt * speed;
+      state.current.x = width / 2 + Math.sin(state.current.angle) * config.swingAmplitude;
+    }
+
+    if (state.current && state.current.dropping) {
+      state.current.vy += config.gravity * dt;
+      state.current.y += state.current.vy * dt;
+      handleCollision(state.current);
+    }
+
+    if (state.falling) {
+      state.falling.vy += config.gravity * dt;
+      state.falling.y += state.falling.vy * dt;
+      state.falling.x += state.falling.vx * dt;
+      if (state.falling.y < state.cameraY - state.falling.h) {
+        gameOver();
+      }
+    }
+
+    const top = state.blocks[state.blocks.length - 1];
+    const targetCamera = Math.max(0, top.y + top.h - height * 0.7);
+    state.cameraY += (targetCamera - state.cameraY) * config.cameraFollow;
+    if (state.shake > 0.01) {
+      state.shake *= state.shakeDecay;
+    } else {
+      state.shake = 0;
+    }
+  }
+
+  function handleCollision(block) {
+    const top = state.blocks[state.blocks.length - 1];
+    const topSurface = top.y + top.h;
+    if (block.y <= topSurface) {
+      const overlap = getOverlap(block, top);
+      if (overlap <= 0) {
+        state.falling = block;
+        state.current = null;
+        block.dropping = false;
+        state.lastDropDuration = state.time - block.dropTime;
+        state.quickFails = state.lastDropDuration < 1.2 ? state.quickFails + 1 : 0;
+        if (state.quickFails >= 2) {
+          state.assistTimer = 6;
+        }
+        return;
+      }
+      block.y = topSurface;
+      const overhang = block.x - top.x;
+      const support = overlap / block.w;
+      const isPerfect = Math.abs(overhang) < block.w * config.perfectThreshold;
+      const slide = support < 0.6;
+      block.vx = overhang * (slide ? 2.5 : 1.2);
+      block.settling = slide;
+      block.dropping = false;
+      state.current = null;
+      state.blocks.push(block);
+      state.level += 1;
+      const baseScore = 100 + state.level * 8;
+      let bonus = 0;
+      if (isPerfect) {
+        state.combo += 1;
+        bonus += 80 + state.combo * 20;
+        updateStatus('Perfect!');
+        audio.sfx('perfect');
+      } else {
+        state.combo = 0;
+        updateStatus('Хорошо');
+      }
+      if (slide) {
+        bonus += Math.floor(overlap * 0.3);
+      }
+      state.score += baseScore + bonus;
+      state.shake = Math.min(10, Math.abs(block.vy) * 0.004 + (1 - support) * 6);
+      audio.sfx('hit');
+      if (state.level % 10 === 0) {
+        audio.sfx('level');
+      }
+      updateUI();
+      state.lastDropDuration = state.time - block.dropTime;
+      state.quickFails = 0;
+      if (state.assistTimer <= 0 && state.level > 6) {
+        state.assistTimer = 0;
+      }
+      spawnBlock();
+    }
+  }
+
+  function getOverlap(a, b) {
+    const left = Math.max(a.x - a.w / 2, b.x - b.w / 2);
+    const right = Math.min(a.x + a.w / 2, b.x + b.w / 2);
+    return right - left;
+  }
+
+  function updateSettling(dt) {
+    for (let i = 1; i < state.blocks.length; i++) {
+      const block = state.blocks[i];
+      if (!block.settling) continue;
+      const base = state.blocks[i - 1];
+      block.x += block.vx * dt;
+      block.vx *= config.settleFriction;
+      const overlap = getOverlap(block, base);
+      if (overlap <= 0) {
+        state.falling = block;
+        state.blocks.splice(i, 1);
+        state.current = null;
+        state.lastDropDuration = state.time - block.dropTime;
+        state.quickFails = state.lastDropDuration < 1.2 ? state.quickFails + 1 : 0;
+        if (state.quickFails >= 2) {
+          state.assistTimer = 6;
+          state.quickFails = 0;
+        }
+        return;
+      }
+      if (Math.abs(block.vx) < 4) {
+        block.settling = false;
+      }
+    }
+  }
+
+  function gameOver() {
+    if (!state.running) return;
+    state.running = false;
+    state.ready = false;
+    updateStatus('Поражение');
+    centerMessage.style.display = 'block';
+    centerMessage.querySelector('p').textContent = 'Нажмите Start для рестарта';
+    audio.sfx('gameover');
+  }
+
+  function drawRoundedRect(x, y, w, h, r) {
+    const radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  function drawBlock(block, isCurrent = false) {
+    const screenX = block.x;
+    const screenY = worldToScreenY(block.y + block.h);
+    const h = block.h;
+    const w = block.w;
+    const grad = ctx.createLinearGradient(screenX - w / 2, screenY - h, screenX + w / 2, screenY);
+    const palette = colors[block.colorIndex];
+    grad.addColorStop(0, palette[0]);
+    grad.addColorStop(1, palette[1]);
+    ctx.fillStyle = grad;
+    ctx.shadowColor = 'rgba(0,0,0,0.3)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 6;
+    drawRoundedRect(screenX - w / 2, screenY - h, w, h, 6);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    if (isCurrent) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(screenX - w / 2, screenY - h, w, h);
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(screenX - w / 2 + 4, screenY - h + 4, w - 8, 6);
+  }
+
+  function worldToScreenY(worldY) {
+    return height - (worldY - state.cameraY);
+  }
+
+  function draw() {
+    const scene = scenes[state.sceneIndex % scenes.length];
+    scene.draw(state.cameraY * 0.4);
+
+    if (state.shake > 0) {
+      ctx.save();
+      ctx.translate((Math.random() - 0.5) * state.shake, (Math.random() - 0.5) * state.shake);
+    }
+
+    for (const block of state.blocks) {
+      drawBlock(block);
+    }
+    if (state.current) {
+      drawBlock(state.current, true);
+    }
+    if (state.falling) {
+      drawBlock(state.falling, true);
+    }
+
+    if (state.guide && state.current && !state.current.dropping) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 2;
+      const guideY = worldToScreenY(state.current.y + state.current.h + 14);
+      ctx.beginPath();
+      ctx.moveTo(width / 2, guideY - 20);
+      ctx.lineTo(width / 2, guideY + 20);
+      ctx.stroke();
+    }
+
+    if (state.shake > 0) {
+      ctx.restore();
+    }
+
+    ctx.globalAlpha = 0.15;
+    ctx.drawImage(noiseCanvas, 0, 0, width, height);
+    ctx.globalAlpha = 1;
+  }
+
+  let last = 0;
+  let acc = 0;
+  const step = 1 / 60;
+
+  function loop(ts) {
+    requestAnimationFrame(loop);
+    if (!state.running || state.paused) {
+      last = ts;
+      draw();
+      return;
+    }
+    const now = ts / 1000;
+    if (!last) last = now;
+    acc += Math.min(0.05, now - last);
+    last = now;
+    while (acc >= step) {
+      update(step);
+      updateSettling(step);
+      acc -= step;
+    }
+    state.sceneIndex = Math.floor(state.level / 10) % scenes.length;
+    draw();
+  }
+
+  function startGame() {
+    if (!audio.started) audio.init();
+    state.running = true;
+    state.ready = false;
+    centerMessage.style.display = 'none';
+    updateStatus('Стройте башню');
+    resetGame();
+  }
+
+  function handleAction() {
+    if (state.ready) {
+      startGame();
+      return;
+    }
+    dropBlock();
+  }
+
+  function togglePause(pause) {
+    state.paused = pause;
+    if (pause) {
+      updateStatus('Пауза');
+    } else if (state.running) {
+      updateStatus('Стройте башню');
+    }
+  }
+
+  startBtn.addEventListener('click', () => {
+    startGame();
+  });
+
+  muteBtn.addEventListener('click', () => {
+    audio.setMute(!audio.muted);
+    muteBtn.textContent = audio.muted ? 'Unmute' : 'Mute';
+  });
+
+  guideBtn.addEventListener('click', () => {
+    state.guide = !state.guide;
+    guideBtn.textContent = state.guide ? 'Guide: On' : 'Guide: Off';
+  });
+
+  window.addEventListener('click', (event) => {
+    if (event.target.tagName === 'BUTTON') return;
+    handleAction();
+  });
+  window.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') {
+      event.preventDefault();
+      handleAction();
+    }
+  });
+  window.addEventListener('resize', resize);
+  window.addEventListener('blur', () => togglePause(true));
+  window.addEventListener('focus', () => togglePause(false));
+  document.addEventListener('visibilitychange', () => {
+    togglePause(document.hidden);
+  });
+
+  resize();
+  resetGame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
